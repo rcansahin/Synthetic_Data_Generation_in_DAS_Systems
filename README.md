@@ -1,48 +1,54 @@
 # Synthetic Data Generation in DAS Systems
 
-This project implements a synthetic distributed acoustic sensing (DAS) data-generation and modeling workflow based on a GAN-style encoder-generator-discriminator pipeline with a peak-mask anti-leakage design. The model receives noisy raw DAS signals, masks and suppresses peak locations through a widened peak mask, compresses the remaining background into a latent style vector, and then reconstructs synthetic walking peaks through an energy-aware generator.
+This project implements a synthetic distributed acoustic sensing (DAS) data-generation and modeling workflow based on the GAN v4.7 architecture described in the training notebook. The architecture moves away from rigid square masks and complex conflicting constraints toward a simpler KISS-style design using Gaussian soft masking, randomized erasing, spectral loss, and a diffusion-style conditional workflow.
 
 ## Folder contents
 
-- `training_gan.ipynb` — main notebook for the encoder-generator-discriminator training loop, losses, synthetic reconstruction, and visualization.
-- `timesnet_encoder.py` — TimesNet-style encoder and temporal representation builder.
-- `sequences_peaks.py` — sequence and peak extraction utilities, including the peak mask generation and wavelet denoising routine.
-- `utils.py` — shared utilities for GPU setup and result support.
-- `dummy_data_reader.py` — synthetic or dummy data loading support.
-- `conf_mat_thr.py` — confusion-matrix and threshold evaluation utilities.
+- `training_gan.ipynb` — primary notebook containing the current diffusion-style GAN pipeline, training loop, STFT spectral loss, encoder path, and visualization.
+- `timesnet_encoder.py` — temporal encoder and TimesNet-style building blocks.
+- `sequences_peaks.py` — sequence handling, peak extraction, peak-mask generation, and waveform utilities.
+- `utils.py` — GPU configuration and shared utility functions.
+- `dummy_data_reader.py` — lightweight synthetic or dummy dataset reader.
+- `conf_mat_thr.py` — confusion-matrix and threshold evaluation support.
 
 ## Architecture summary
 
-The implemented architecture follows the notebook’s model version tag: GAN v4.6, an energy-aware style transfer and inpainting workflow built around a reference-conditioned conditional GAN.
+The current model version is described as GAN v4.7 with a Gaussian dynamic masking, randomized eraser, and spectral/STFT loss pipeline. It is also framed as a diffusion model architecture in the notebook.
 
 1. Encoder (Style Extractor)
-   - Input: masked signal in Z-score form and the peak mask.
-   - Goal: remove walking peak information from the real signal by zeroing the peak region with a 31-sample expanded mask. The encoder only sees the silent or masked background and compresses it into a 512-dimensional latent style DNA vector `z_encoded`.
+   - Input: randomly masked signal in Z-score form and a Gaussian peak mask.
+   - Latent bottleneck: the latent vector is compressed from 512 dimensions down to 128 dimensions so the model focuses on the core style DNA rather than memorizing background detail.
+   - Latent noise: Gaussian noise with `std=0.1` is injected into the 128-dimensional latent vector during training to smooth the latent space and reduce memorization.
+   - Randomized Eraser: instead of static 61-sample masking, the DataLoader now integrates a dynamic randomized eraser (`enc_mask`) that extends randomly from the left and right of the same walking template by 20–80 units per iteration, preventing leakage and memorization.
 
 2. Generator (Synthesizer)
-   - Input: `z_encoded` and the peak mask.
-   - Goal: build realistic peaks in the masked areas using the style signal from the encoder.
-   - Improvement: an energy loss and amplitude loss are used to prevent generator regression to low-energy or flat outputs. The generator is encouraged to create aggressive, high-amplitude synthetic peaks.
+   - Input: noisy `z_encoded` latent DNA and the Gaussian peak mask template.
+   - Objective: synthesize realistic walking peaks dynamically while adapting the generated signal to the target mask and the surrounding background.
+   - Spectral/STFT Loss: the generator is now penalized not only in the time waveform domain but also in the frequency domain using Short-Time Fourier Transform comparisons. This helps the model preserve the acoustic texture, tonality, and friction signatures of the real walking signal.
+   - Soft Gaussian Masking: the target mask is no longer a hard square binary window; instead, it becomes a soft Gaussian envelope centered around the peak and fading smoothly at the edges. This reduces artificial edge spikes and ensures a smoother fade-in and fade-out behavior.
+   - Dynamic Physical Loss: amplitude, energy, gradient, and STFT losses are applied directly inside the soft Gaussian mask boundaries, allowing energy to peak at the center and decay naturally through ring-down.
 
 3. Discriminator (Conditional Judge)
-   - Input: full signal plus instance noise and the peak mask.
-   - Goal: judge whether the signal appears realistic in DAS format and whether the event timing is plausible.
-   - Defensive design: TTUR, label smoothing, and instance noise are used to prevent the discriminator from overpowering the generator.
+   - Input: full noisy signal plus instance noise (`std=0.05`) and the Gaussian peak mask.
+   - Objective: check whether the signal is a realistic DAS-like vibration and whether it matches the soft Gaussian mask.
+   - Defenses: TTUR with different learning rates and label smoothing (`0.9 / 0.1`) prevent the discriminator from overpowering the generator.
 
-## Data and visualization logic
+## Data and modeling philosophy
 
-- The model is trained on raw noisy DAS signals so that the classifier can recognize the desired class behavior correctly.
-- Visualization uses wavelet denoising `_wavelet_filter` to make the generated patterns easier to inspect at the end of each epoch.
+- The old complex, conflicting constraints are replaced by a simpler engineering philosophy based on KISS.
+- The randomized eraser mask and the Gaussian target mask are separated before entering the model so the DataLoader prevents leakage instead of carrying the complexity inside TensorFlow graph operations.
+- Soft Gaussian envelopes replace square masks to match the natural acoustic decay pattern of DAS signals.
+- The model has moved from strict time-only constraints to time-frequency analysis, forcing the architecture to learn not only waveform shape but also the acoustic DNA of the signal.
 
 ## Typical workflow
 
 1. Open `training_gan.ipynb`.
-2. Load sequence data and train/validation CSV files using `sequences_peaks.py` and `dummy_data_reader.py`.
-3. Generate or update the peak mask and convert the signal into the masked encoder input.
-4. Train the encoder-generator-discriminator loop with the TimesNet encoder and generator/discriminator builders.
-5. Use the classifier and threshold utilities for final assessment of the synthetic signal quality.
+2. Load the training or validation sequence data using `SequenceConfig`, `TrainSequence`, and `ValidationSequence` from `sequences_peaks.py`.
+3. Generate the `enc_mask` and `peak_mask` objects in the DataLoader path and feed the masked signal and Gaussian mask into the encoder.
+4. Train the conditional encoder-diffusion unet path using noise injection and STFT-aware reconstruction objectives.
+5. Use the provided classifier and threshold tools if needed to validate synthetic signal realism and walking-class behavior.
 
 ## Purpose
 
-The repository demonstrates a peak-masked synthetic DAS signal generation pipeline built around an encoder-generator-discriminator design, with emphasis on anti-leakage masking, high-energy peak reconstruction, classifier-aware signal quality, and wavelet-assisted visualization.
+The project demonstrates a synthetic DAS signal generation pipeline that emphasizes randomized masking, Gaussian soft masking, STFT/frequency-domain loss, diffusion-style denoising, and a noise-regularized latent style encoder path. The end goal is to synthesize realistic walking peaks while preserving the acoustic fingerprint and event structure of the raw DAS signal.
 
