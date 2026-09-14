@@ -1,54 +1,70 @@
 # Synthetic Data Generation in DAS Systems
 
-This project implements a synthetic distributed acoustic sensing (DAS) data-generation and modeling workflow based on the GAN v4.7 architecture described in the training notebook. The architecture moves away from rigid square masks and complex conflicting constraints toward a simpler KISS-style design using Gaussian soft masking, randomized erasing, spectral loss, and a diffusion-style conditional workflow.
+This repository implements a synthetic distributed acoustic sensing (DAS) data-generation and diffusion model pipeline for the CAR class. It follows the notebook’s latest architecture definition: Diffusion v6 (Heavy-Duty 1D U-Net & Classifier-Free Guidance / SOTA Sismik Akustik Difüzyon Modeli).
 
-## Folder contents
+The project emphasizes an iterative denoising pipeline in which the model starts from a white-noise initialization and reconstructs smooth synthetic acoustic events from noisy DAS signals. The codebase is organized around a conditional 1D U-Net, a compact latent style encoder, Gaussian masking, randomized erasing, and time-frequency signal reconstruction.
 
-- `training_gan.ipynb` — primary notebook containing the current diffusion-style GAN pipeline, training loop, STFT spectral loss, encoder path, and visualization.
-- `timesnet_encoder.py` — temporal encoder and TimesNet-style building blocks.
-- `sequences_peaks.py` — sequence handling, peak extraction, peak-mask generation, and waveform utilities.
-- `utils.py` — GPU configuration and shared utility functions.
-- `dummy_data_reader.py` — lightweight synthetic or dummy dataset reader.
-- `conf_mat_thr.py` — confusion-matrix and threshold evaluation support.
+## Repository files
+
+- `training_gan.ipynb` — main training notebook for the diffusion model, encoder, encoder-style conditioning, and iterative noise-removal workflow.
+- `testing_gan.ipynb` — inference/testing notebook for generated or synthetic signal evaluation.
+- `generate_synthetic.ipynb` — notebook for synthetic signal generation and sample reproduction.
+- `data_generation_peaks_walk.ipynb` — notebook for data generation and peak boundary generation logic.
+- `diffusion_encoder.py` — conditional 1D U-Net and diffusion encoder/model builder utilities.
+- `timesnet_encoder.py` — temporal encoder and TimesNet-style feature extraction utilities.
+- `sequences_peaks.py` — sequence loading, signal row loading, peak boundary generation, sequence configuration, and signal utilities.
+- `synthetic_hdf5_creator.py` — synthetic HDF5 dataset creator.
+- `dummy_data_reader.py` — lightweight dummy/synthetic data reader.
+- `utils.py` — GPU setup and shared utility support.
+- `conf_mat_thr.py` — threshold and confusion-matrix helper functions.
 
 ## Architecture summary
 
-The current model version is described as GAN v4.7 with a Gaussian dynamic masking, randomized eraser, and spectral/STFT loss pipeline. It is also framed as a diffusion model architecture in the notebook.
+### 1. Encoder — Style Extractor
 
-1. Encoder (Style Extractor)
-   - Input: randomly masked signal in Z-score form and a Gaussian peak mask.
-   - Latent bottleneck: the latent vector is compressed from 512 dimensions down to 128 dimensions so the model focuses on the core style DNA rather than memorizing background detail.
-   - Latent noise: Gaussian noise with `std=0.1` is injected into the 128-dimensional latent vector during training to smooth the latent space and reduce memorization.
-   - Randomized Eraser: instead of static 61-sample masking, the DataLoader now integrates a dynamic randomized eraser (`enc_mask`) that extends randomly from the left and right of the same walking template by 20–80 units per iteration, preventing leakage and memorization.
+- Input: a randomly masked DAS signal in Z-score form and a Gaussian peak mask.
+- The latent style bottleneck is preserved at 128 dimensions. This keeps the model focused on the clean acoustic background character rather than memorizing irrelevant detail.
+- A classifier-free guidance update is implemented through style dropout. During training, the 128-dimensional style DNA is randomly zeroed with a probability of 10%. This enables the U-Net to learn both conditional and unconditional synthesis behavior.
+- A randomized eraser is used at the data-loader level. Instead of a fixed 61-sample eraser, the encoder mask (`enc_mask`) is created by extending the signal boundary randomly on the left and right by 20–80 samples, preventing leakage and forcing the model to learn boundary-aware synthesis.
 
-2. Generator (Synthesizer)
-   - Input: noisy `z_encoded` latent DNA and the Gaussian peak mask template.
-   - Objective: synthesize realistic walking peaks dynamically while adapting the generated signal to the target mask and the surrounding background.
-   - Spectral/STFT Loss: the generator is now penalized not only in the time waveform domain but also in the frequency domain using Short-Time Fourier Transform comparisons. This helps the model preserve the acoustic texture, tonality, and friction signatures of the real walking signal.
-   - Soft Gaussian Masking: the target mask is no longer a hard square binary window; instead, it becomes a soft Gaussian envelope centered around the peak and fading smoothly at the edges. This reduces artificial edge spikes and ensures a smoother fade-in and fade-out behavior.
-   - Dynamic Physical Loss: amplitude, energy, gradient, and STFT losses are applied directly inside the soft Gaussian mask boundaries, allowing energy to peak at the center and decay naturally through ring-down.
+### 2. Conditional 1D U-Net — Synthesis Engine
 
-3. Discriminator (Conditional Judge)
-   - Input: full noisy signal plus instance noise (`std=0.05`) and the Gaussian peak mask.
-   - Objective: check whether the signal is a realistic DAS-like vibration and whether it matches the soft Gaussian mask.
-   - Defenses: TTUR with different learning rates and label smoothing (`0.9 / 0.1`) prevent the discriminator from overpowering the generator.
+- Input: noisy signal `x_t`, normalized timestep `t`, latent style DNA `z_encoded`, and a Gaussian mask.
+- The model begins from a pure white-noise prior and denoises the signal over a full `T = 1000` diffusion schedule. It learns to remove stochastic Gaussian noise step by step and recover clean synthetic CAR acoustic events.
+- Heavy-duty residual blocks replace simple convolutions. They use double 1D convolutions and FiLM-style conditioning to carry time and latent-style information through the model depth.
+- The filter path is increased to `[48, 96, 192, 384]` across the residual stack.
+- A bottleneck self-attention layer with 4 heads is added at the deepest point where the signal has been compressed to 625 samples. This allows the model to connect the beginning and end of the long 5000-sample signal and learn global acoustic dependencies such as echo coherence, decay, and damping behavior.
+
+### 3. Classifier-Free Guidance (CFG)
+
+At inference time, the diffusion model produces two predictions:
+
+- a conditional prediction using the Gaussian template and latent style
+- an unconditional prediction using a zero-style or zero-mask condition
+
+The model then combines them using:
+
+`pred_noise = uncond + GUIDANCE_SCALE * (cond - uncond)`
+
+A guidance scale such as `w = 4.0` forces the model to follow the target mask more strictly. Regions outside the mask become silent or clean, while the masked area is sharpened into high-energy, high-amplitude synthetic seismic peaks.
 
 ## Data and modeling philosophy
 
-- The old complex, conflicting constraints are replaced by a simpler engineering philosophy based on KISS.
-- The randomized eraser mask and the Gaussian target mask are separated before entering the model so the DataLoader prevents leakage instead of carrying the complexity inside TensorFlow graph operations.
-- Soft Gaussian envelopes replace square masks to match the natural acoustic decay pattern of DAS signals.
-- The model has moved from strict time-only constraints to time-frequency analysis, forcing the architecture to learn not only waveform shape but also the acoustic DNA of the signal.
+- The older adversarial GAN setup, including discriminator instability, TTUR, and label smoothing, is removed in favor of a mathematically stable denoising diffusion scheme.
+- The dataset process no longer tries to create a perfect shape in one shot. Instead, the model follows an iterative denoising process and learns natural acoustic decay and time-frequency structure through the statistics of the inverse diffusion chain.
+- Hard, square masks are removed. Gaussian soft envelopes and wide 5/7 kernel convolutions smooth the synthetic signal and reduce artificial artifacts.
+- The project now emphasizes time-frequency analysis rather than only time-domain signal shape. The model is forced to learn the acoustic DNA and frequency response of the target event, not just the waveform envelope.
 
-## Typical workflow
+## Workflow
 
 1. Open `training_gan.ipynb`.
-2. Load the training or validation sequence data using `SequenceConfig`, `TrainSequence`, and `ValidationSequence` from `sequences_peaks.py`.
-3. Generate the `enc_mask` and `peak_mask` objects in the DataLoader path and feed the masked signal and Gaussian mask into the encoder.
-4. Train the conditional encoder-diffusion unet path using noise injection and STFT-aware reconstruction objectives.
-5. Use the provided classifier and threshold tools if needed to validate synthetic signal realism and walking-class behavior.
+2. Load the training and validation CSV files from the DAS dataset using `SequenceConfig`, `TrainSequence`, and `ValidationSequence` from `sequences_peaks_v2.py`.
+3. Generate the `enc_mask` and `peak_mask` boundaries with the sequence utilities.
+4. Pass the randomly masked Z-score signal and Gaussian mask to the encoder style extractor.
+5. Train the conditional 1D U-Net through the diffusion denoising loop with classifier-free guidance support.
+6. Use `testing_gan.ipynb` and `generate_synthetic.ipynb` to inspect generated signals and compare them to the target distribution.
+7. Export synthetic HDF5 or data summaries using `synthetic_hdf5_creator.py` when needed.
 
 ## Purpose
 
-The project demonstrates a synthetic DAS signal generation pipeline that emphasizes randomized masking, Gaussian soft masking, STFT/frequency-domain loss, diffusion-style denoising, and a noise-regularized latent style encoder path. The end goal is to synthesize realistic walking peaks while preserving the acoustic fingerprint and event structure of the raw DAS signal.
-
+The repository demonstrates a modern diffusion-based synthetic DAS generation pipeline for the CAR class. It combines a latent style encoder, a heavy-duty conditional 1D U-Net, Gaussian soft masking, randomized erasing, and classifier-free guidance to synthesize acoustic events that preserve the waveform and frequency fingerprint of the original DAS data while reducing artifacts from hard square masks.
