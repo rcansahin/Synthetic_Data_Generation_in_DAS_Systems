@@ -1,24 +1,37 @@
 # Synthetic Data Generation in DAS Systems
 
-This repository explores synthetic data generation and signal modeling for distributed acoustic sensing (DAS) systems. It combines augmentation utilities, configuration files, a dummy data reader, and notebooks for encoding, time-series generation, and residual GAN-style offline excavation workflows.
+This project implements a synthetic distributed acoustic sensing (DAS) data-generation and modeling pipeline centered on a peak-masked encoder, generator, and discriminator architecture. The workflow combines sequence preprocessing, synthetic trace augmentation, TimesNet-style encoding, and a GAN-style training loop for generating realistic DAS-like signal patterns.
 
 ## Folder contents
 
-- `encoder.ipynb` — notebook for encoding and feature representation experiments.
-- `timesnet-gen.ipynb` — notebook for time-series synthetic generation with a TimesNet-style workflow.
-- `residual_gan_excavation_offline.ipynb` — notebook for residual GAN or excavation-style synthetic data generation experiments.
-- `augmentations.py` — custom augmentation routines.
-- `conf_mat_thr.py` — confusion matrix or threshold-related utility code.
-- `config.py` — project configuration constants.
-- `dummy_data_reader.py` — lightweight data reader for synthetic or dummy input samples.
+- `training_gan.ipynb` — main notebook for the GAN-style training pipeline and synthetic signal reconstruction workflow.
+- `timesnet_encoder.py` — TimesNet-inspired encoder for sequence and temporal representation.
+- `sequences_peaks.py` — sequence and peak extraction utilities used for masking and signal modeling.
+- `utils.py` — shared data and plotting utilities.
+- `dummy_data_reader.py` — lightweight reader for synthetic or dummy DAS inputs.
+- `conf_mat_thr.py` — confusion-matrix and threshold evaluation support.
+- `README.md` — project documentation.
+
+## Peak-mask encoder-generator-discriminator pipeline
+
+The project is organized around a three-part signal modeling flow:
+
+1. `Peak mask` extraction and sequence preparation using `sequences_peaks.py`.
+2. `Encoder` path implemented through `timesnet_encoder.py` to capture temporal structure and feature representation.
+3. `Generator` and `Discriminator` training in `training_gan.ipynb` for synthetic DAS signal reconstruction or image-like waveform synthesis.
+
+The peak mask acts as a spatial or temporal attention gate that guides the encoder-generator-discriminator loop to concentrate on the most informative DAS events rather than the full noisy background.
 
 ## Typical workflow
 
-1. Open the notebook that matches the intended experiment, such as `encoder.ipynb` or `timesnet-gen.ipynb`.
-2. Use `config.py` and `augmentations.py` to configure and transform the synthetic data pipeline.
-3. Load data through `dummy_data_reader.py` or notebook-specific cells.
-4. Train, evaluate, or inspect model outputs using the GAN or time-series notebook cells.
+1. Open `training_gan.ipynb`.
+2. Prepare or load synthetic sequence samples with the helper scripts and the dummy reader.
+3. Apply peak masking and sequence extraction using `sequences_peaks.py`.
+4. Pass the masked sequences through the TimesNet encoder representation layer.
+5. Train or evaluate the generator and discriminator on the encoded signal samples.
+6. Use the confusion-matrix and threshold utilities for diagnostic evaluation.
 
 ## Purpose
 
-The goal is to develop and study synthetic DAS data generation workflows, including augmentation, encoding, residual GAN-style exploration, and TimesNet-inspired time-series generation.
+The repository demonstrates a synthetic DAS signal generation pipeline that emphasizes peak masking, TimesNet-style sequence encoding, and adversarial learning through an encoder-generator-discriminator structure for event-focused signal reconstruction and generation.
+
