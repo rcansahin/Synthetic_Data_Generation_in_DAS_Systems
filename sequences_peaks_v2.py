@@ -13,10 +13,36 @@ from tensorflow.keras.utils import Sequence, to_categorical
 from scipy import signal
 REQUIRED_COLUMNS = ["file", "channel", "event", "window_start", "window_end", "peaks"]
 
-def _generate_peak_mask(peaks_str, window_size, min_radius=15, max_radius=100):
+# def _generate_peak_mask(peaks_str, window_size, min_radius=15, max_radius=100):
+#     """
+#     Rastgele yayılım genişliğinde maske üretir. 
+#     Radius 15-50 arası demek, toplam genişlik 30-100 indeks arası olacak demektir.
+#     """
+#     mask = np.zeros((window_size, 1), dtype=np.float32)
+#     if pd.isna(peaks_str) or peaks_str == "":
+#         return mask
+    
+#     try:
+#         peak_indices = [int(p) for p in str(peaks_str).split(",") if p.strip()]
+#         for p in peak_indices:
+#             if p < window_size:
+#                 # Hocanın istediği tamamen rastgele maske genişliği
+#                 random_sigma = np.random.randint(min_radius, max_radius + 1)
+                
+#                 start = max(0, p - random_sigma)
+#                 end = min(window_size, p + random_sigma + 1)
+#                 mask[start:end] = 1.0
+#     except ValueError:
+#         pass
+#     return mask
+import numpy as np
+import pandas as pd
+
+def _generate_peak_mask(peaks_str, window_size, event_type="walking", min_width=120, max_width=160):
     """
-    1. Jeneratör için Gaussian (Yumuşak) hedef maskesi üretir.
-    2. Encoder için RASTGELE boyutta, geniş bir körleştirme silgisi üretir.
+    Sınıfa (event_type) göre koşullandırma maskesi ve encoder körleştirme silgisi üretir.
+    1. Araçlar (car/vehicle) için: İlk iki değeri (başlangıç, bitiş) devasa blok aralık olarak kullanır.
+    2. Yürüme/Kazı için: Değişken zaman ölçekli keskin (Square) ve asimetrik maske üretir.
     """
     peak_mask = np.zeros((window_size, 1), dtype=np.float32)
     enc_mask = np.zeros((window_size, 1), dtype=np.float32)
@@ -25,42 +51,67 @@ def _generate_peak_mask(peaks_str, window_size, min_radius=15, max_radius=100):
         return peak_mask, enc_mask
     
     try:
-        peak_indices = [int(p) for p in str(peaks_str).split(",") if p.strip()]
-        for p in peak_indices:
-            if p < window_size:
-                # --- A. GAUSSIAN PEAK MASK (Jeneratör İçin) ---
-                random_sigma = np.random.randint(min_radius, max_radius + 1)
-                width = random_sigma * 2
+        # Gelen veriyi virgül ile parçalayıp tam sayı listesi yapıyoruz
+        parts = [int(p) for p in str(peaks_str).split(",") if p.strip()]
+        if len(parts) == 0:
+            return peak_mask, enc_mask
+        
+        # =========================================================
+        # --- A. ARAÇ GEÇİŞİ (CAR / VEHICLE) MANTIĞI ---
+        # =========================================================
+        if "car" in event_type:
+            if len(parts) >= 2:
+                # Virgülle ayrılmış string'in ilk iki elemanı başlangıç ve bitiştir (Örn: 5000, 15000)
+                v_start = parts[0]
+                v_end = parts[1]
                 
-                if width > 1:
-                    # Yumuşak çan eğrisini oluştur
-                    gaussian_window = signal.windows.gaussian(width, std=width/4)
-                    start = p - random_sigma
-                    end = p + random_sigma
+                valid_start = max(0, v_start)
+                valid_end = min(window_size, v_end)
+                
+                if valid_end > valid_start:
+                    # 1. Jeneratör için Devasa Keskin Blok Maske (1.0)
+                    peak_mask[valid_start:valid_end] = 1.0
+                    
+                    # 2. Encoder için Körleştirme 
+                    # Araç enerjisi geniş yayıldığı için padding daha büyük tutulur (200-600)
+                    random_padding = np.random.randint(200, 600) 
+                    enc_start = max(0, v_start - random_padding)
+                    enc_end = min(window_size, v_end + random_padding)
+                    enc_mask[enc_start:enc_end] = 1.0
+
+        # =========================================================
+        # --- B. YÜRÜME VE KAZI (WALKING / DIGGING) MANTIĞI ---
+        # =========================================================
+        else:
+            for p in parts:
+                if p < window_size:
+                    # Gaussian (Çan Eğrisi) yerine, CFG ile tam uyumlu çalışan 
+                    # "Değişken Genişlikli Asimetrik Keskin Maske" (Square) kullanıyoruz.
+                    width = np.random.randint(min_width, max_width + 1)
+                    left_w = int(width * 0.85)  # Asimetrik: Topuk %85
+                    right_w = int(width * 0.15) # Asimetrik: Burun %15
+                    
+                    start = p - left_w
+                    end = p + right_w
                     
                     valid_start = max(0, start)
                     valid_end = min(window_size, end)
                     
-                    gauss_start_idx = valid_start - start
-                    gauss_end_idx = gauss_start_idx + (valid_end - valid_start)
+                    if valid_end > valid_start:
+                        # 1. Jeneratör için Keskin Maske (Genlik her zaman 1.0)
+                        peak_mask[valid_start:valid_end] = 1.0
+                        
+                    # 2. Encoder için Rastgele Körleştirme (Padding: 20-80)
+                    random_padding = np.random.randint(20, 81)
+                    enc_start = max(0, p - left_w - random_padding)
+                    enc_end = min(window_size, p + right_w + random_padding)
+                    enc_mask[enc_start:enc_end] = 1.0
                     
-                    mask_slice = gaussian_window[gauss_start_idx:gauss_end_idx].reshape(-1, 1)
-                    peak_mask[valid_start:valid_end] = np.maximum(peak_mask[valid_start:valid_end], mask_slice)
-                else:
-                    peak_mask[p] = 1.0
-                    
-                # --- B. RASTGELE KÖRLEŞTİRME MASKESİ (Encoder İçin) ---
-                # Sabit 61 yerine, Gaussian şablonun sağından ve solundan 
-                # rastgele 20 ile 80 birim arası ekstra silgi ekliyoruz.
-                random_padding = np.random.randint(20, 81)
-                enc_start = max(0, p - random_sigma - random_padding)
-                enc_end = min(window_size, p + random_sigma + random_padding)
-                enc_mask[enc_start:enc_end] = 1.0
-                
     except ValueError:
         pass
         
     return peak_mask, enc_mask
+    
 def _generate_tukey_peak_mask(peaks_str, window_size, min_width=120, max_width=160):
     """
     1. Jeneratör için Tukey (Flat-Top Gaussian) hedef maskesi üretir.
@@ -325,8 +376,7 @@ class BaseSignalSequence(Sequence):
                 
                 # 2. Peak Maskesini (Ground Truth) Oluştur
                 # Bu maske hem girişte kanal olacak hem de çıkışta hedef (target)
-                peak_mask, enc_mask = _generate_peak_mask(peaks_str, self.window_size, min_radius=30, max_radius=150)
-                # peak_mask, enc_mask = _generate_tukey_peak_mask(peaks_str, self.window_size, min_width=120, max_width=160)
+                peak_mask, enc_mask = _generate_peak_mask(peaks_str, self.window_size, event_type=event)
             except (KeyError, OSError, ValueError) as e:
                 print(f"Dosya hatası ({row['file']}): {e}")
                 continue
